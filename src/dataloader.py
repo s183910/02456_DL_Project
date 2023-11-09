@@ -1,131 +1,91 @@
-import os
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import numpy as np
-import glob
-import PIL.Image as Image
-
-# pip install torchsummary
-import torch
-from torch.utils.data import random_split
-import torchvision.transforms as transforms
-
-data_path_QM9 = "/dtu/datasets1/02514/DRIVE/training"  # TODO insert the URL
-
-
-class QM9_Data(torch.utils.data.Dataset):
-    def __init__(self, data_path=data_path_QM9):
-
-        self.qm9_records = qm9_fetch()
-        self.data = qm9_parse(qm9_records)
-
-    def convert_record(d):
-        # break up record
-        (e, x), y = d
-        #
-        e = e.numpy()
-        x = x.numpy()
-        r = x[:, :3]
-        # make ohc size larger
-        # so use same node feature
-        # shape later
-        ohc = np.zeros((len(e), 16))
-        ohc[np.arange(len(e)), e - 1] = 1
-        return (ohc, r), y.numpy()[13]
-
-    for d in data:
-        (e, x), y = convert_record(d)
-        print("Element one hots\n", e)
-        print("Coordinates\n", x)
-        print("Label:", y)
-        break
-
-    def get_datasets(self):
-        train_size = int(0.8 * len(self))
-        test_size = len(self) - train_size
-        val_size = int(0.2 * train_size)
-        train_size = train_size - val_size
-        train_dataset, test_dataset, val_dataset = random_split(
-            self, [train_size, test_size, val_size]
-        )
-        # train_dataset.dataset.transform = self.train_transform
-        # test_dataset.dataset.transform = self.test_transform
-        # val_dataset.dataset.transform = self.test_transform
-        return train_dataset, test_dataset, val_dataset
-
-
-"""
-class Lesion_Data(torch.utils.data.Dataset):
-    def __init__(self, train_transform_size=128, test_transform_size=128, data_path=data_path_lesion):
-        'Initialization'
-        self.image_paths = sorted(glob.glob(data_path + '/***/**_Dermoscopic_Image/*.bmp'))
-        self.mask_paths = sorted(glob.glob(data_path + '/***/**_lesion/*.bmp'))
-        self.train_transform = transforms.Compose([transforms.Resize((train_transform_size, train_transform_size)),
-                                                            transforms.ToTensor()])
-        self.test_transform = transforms.Compose([transforms.Resize((test_transform_size, test_transform_size)),
-                                                            transforms.ToTensor()])
-
-    def __len__(self):
-        'Returns the total number of samples'
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        'Generates one sample of data'
-        image_path = self.image_paths[idx]
-        mask_path = self.mask_paths[idx]
-        image = Image.open(image_path)
-        mask = Image.open(mask_path)
-        Y = self.train_transform(mask)
-        X = self.train_transform(image)
-        return X, Y
-
-    def get_datasets(self):
-        train_size = int(0.8 * len(self))
-        test_size = len(self) - train_size
-        val_size = int(0.2 * train_size)
-        train_size = train_size - val_size
-        train_dataset, test_dataset, val_dataset = random_split(self, [train_size, test_size, val_size])
-        train_dataset.dataset.transform = self.train_transform
-        test_dataset.dataset.transform = self.test_transform
-        val_dataset.dataset.transform = self.test_transform
-        return train_dataset, test_dataset, val_dataset
-
-
-class DRIVE_data(torch.utils.data.Dataset):
-    def __init__(self, train_transform_size=128, test_transform_size=128, data_path=data_path_drive):
-        'Initialization'
-        self.image_paths = sorted(glob.glob(data_path + '/images/*.tif'))
-        self.mask_paths = sorted(glob.glob(data_path + '/1st_manual/*.gif'))
+import tensorflow as tf
+import tarfile
+import urllib.request
+import os.path
 
 
 
-        self.train_transform = transforms.Compose([transforms.Resize((train_transform_size, train_transform_size)),
-                                                            transforms.ToTensor()])
-        self.test_transform = transforms.Compose([transforms.Resize((test_transform_size, test_transform_size)),
-                                                            transforms.ToTensor()])
+# def _float_feature(value):
+#     return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
 
-    def __len__(self):
-        'Returns the total number of samples'
-        return len(self.image_paths)
 
-    def __getitem__(self, idx):
-        'Generates one sample of data'
-        image_path = self.image_paths[idx]
-        mask_path = self.mask_paths[idx]
-        image = Image.open(image_path)
-        mask = Image.open(mask_path)
-        Y = self.train_transform(mask)
-        X = self.train_transform(image)
-        return X, Y
+# def _int64_feature(value):
+#     return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
 
-    def get_datasets(self):
-        train_size = int(0.8 * len(self))
-        test_size = len(self) - train_size
-        val_size = int(0.2 * train_size)
-        train_size = train_size - val_size
-        train_dataset, test_dataset, val_dataset = random_split(self, [train_size, test_size, val_size])
-        train_dataset.dataset.transform = self.train_transform
-        test_dataset.dataset.transform = self.test_transform
-        val_dataset.dataset.transform = self.test_transform
-        return train_dataset, test_dataset, val_dataset
-"""
+
+def _float(x):
+    try:
+        return float(x)
+    except:
+        return 0
+
+
+def qm9_data_parse(record):
+    features = {
+        "N": tf.io.FixedLenFeature([], tf.int64),
+        "labels": tf.io.FixedLenFeature([16], tf.float32), # these are the target properties
+        "elements": tf.io.VarLenFeature(tf.int64),
+        "coords": tf.io.VarLenFeature(tf.float32), # these are the
+    }
+    parsed_features = tf.io.parse_single_example(serialized=record, features=features)
+    coords = tf.reshape(tf.sparse.to_dense(parsed_features["coords"], default_value=0), [-1, 4])
+    elements = tf.sparse.to_dense(parsed_features["elements"], default_value=0)
+    return (elements, coords), parsed_features["labels"]
+
+
+def qm9_prepare_records(lines):
+    pt = {"C": 6, "H": 1, "O": 8, "N": 7, "F": 9}
+    N = int(lines[0])
+    labels = [float(x) for x in lines[1].split("gdb")[1].split()]
+    coords = np.empty((N, 4), dtype=np.float64)
+    elements = [pt[x.split()[0]] for x in lines[2 : N + 2]]
+    for i in range(N):
+        coords[i] = [_float(x) for x in lines[i + 2].split()[1:]]
+    feature = {
+        "N": tf.train.Feature(int64_list=tf.train.Int64List(value=[N])),
+        "labels": tf.train.Feature(float_list=tf.train.FloatList(value=labels)),
+        "elements": tf.train.Feature(int64_list=tf.train.Int64List(value=elements)),
+        "coords": tf.train.Feature(float_list=tf.train.FloatList(value=coords.flatten())),
+    }
+    return tf.train.Example(features=tf.train.Features(feature=feature))
+
+
+def qm9_fetch():
+
+    raw_filepath = "data/qm9.tar.bz2"
+    record_file = "data/qm9.tfrecords"
+
+    if os.path.isfile(record_file):
+        print("Found existing record file, delete if you want to re-fetch")
+        return record_file
+
+    if not os.path.isfile(raw_filepath):
+        print("Downloading qm9 data...", end="")
+        urllib.request.urlretrieve("https://ndownloader.figshare.com/files/3195389", raw_filepath)
+        print("File downloaded")
+
+    else:
+        print(f"Found downloaded file {raw_filepath}, delete if you want to redownload")
+    tar = tarfile.open(raw_filepath, "r:bz2")
+
+    print("")
+    with tf.io.TFRecordWriter(
+        record_file, options=tf.io.TFRecordOptions(compression_type="GZIP")
+    ) as writer:
+        for i in range(1, 133886):
+            if i % 100 == 0:
+                print("\r {:.2%}".format(i / 133886), end="")
+            with tar.extractfile(f"dsgdb9nsd_{i:06d}.xyz") as f:
+                lines = [l.decode("UTF-8") for l in f.readlines()]
+                try:
+                    writer.write(qm9_prepare_records(lines).SerializeToString())
+                except ValueError as e:
+                    print(i)
+                    raise e
+    print("")
+    return record_file
+
+
+def qm9_parse(record_file):
+    return tf.data.TFRecordDataset(record_file, compression_type="GZIP").map(qm9_data_parse)
