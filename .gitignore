@@ -83,6 +83,7 @@ target/
 /data/
 /models/
 /outputs/
+/notebooks/your/
 
 # Mac OS-specific storage files
 .DS_Store
