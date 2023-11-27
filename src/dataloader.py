@@ -5,13 +5,8 @@ import urllib.request
 import os.path
 
 
-
-# def _float_feature(value):
-#     return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
-
-
-# def _int64_feature(value):
-#     return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+import torch
+import torch.nn as nn
 
 
 def _float(x):
@@ -89,3 +84,43 @@ def qm9_fetch():
 
 def qm9_parse(record_file):
     return tf.data.TFRecordDataset(record_file, compression_type="GZIP").map(qm9_data_parse)
+
+
+
+
+def convert_record(d, atom_types=100, embedding_dim=128):
+    # break up record
+    (e, x), y = d
+    e = torch.tensor(e.numpy())
+    x = torch.tensor(x.numpy())
+    r = x[:, :3]
+
+    e = e - 1
+    e = torch.clamp(e, 0, atom_types - 1)
+
+    # Embedding
+    embedding_layer = nn.Embedding(num_embeddings=atom_types, embedding_dim=embedding_dim)
+    s = embedding_layer(e)
+
+    return (s, r), y.numpy()[13]  # Select attribute at index 13
+
+
+
+def x2e(x, cutoff_distance=5.0):
+    """convert xyz coordinates to pairwise distance with a cutoff distance"""
+
+    r2 = torch.sqrt(((x - x[:, None, :])**2).sum(dim=-1))
+    mask = (r2>0) & (r2 <= cutoff_distance)
+
+    r_ij = torch.where(mask, r2, torch.zeros_like(r2))
+
+    edge_indices = mask.nonzero(as_tuple=True)
+    edge_index = torch.stack(edge_indices)
+    return r_ij, edge_index
+
+# TODO
+def transform_label(y):
+    return (y - train_ym) / train_ys
+
+def transform_prediction(y):
+    return y * train_ys + train_ym
