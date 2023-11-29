@@ -78,153 +78,80 @@ class PaiNN(nn.Module):
 
 #### hertil er det godt
 
+### define radial basis function
+def RBF(r_ij, r_cut: float):
+    r_RBF = []
+    n_values = torch.arange(1, 21, dtype=torch.float32)
+    for i in n_values:
+        r_RBF_n = (torch.sin((i * torch.pi / r_cut) * r_ij)) / r_ij
+        r_RBF.append(r_RBF_n)
 
-
-
-class phi(nn.Module):
-    def __init__(self, input_dim=128):
-        super().__init__()
-        activation_fn = nn.SiLU
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, input_dim, bias=True),
-            activation_fn(),
-            nn.Linear(input_dim, 3*input_dim, bias=True)
-        )
-
-    def forward(self, s_j):
-        return self.net(s_j)
-
-class RBF(nn.Module):
-    def __init__(self, r_cut=5.0):
-        super().__init__()
-        self.r_cut = r_cut
-        self.n_values = torch.arange(1, 21, dtype=torch.float32)
-
-    def forward(self, r_ij):
-        r_RBF_list = []
-
-        for n_value in self.n_values:
-            r_RBF_n = (torch.sin((n_value * 3.14 / self.r_cut) * r_ij)) / r_ij
-            r_RBF_list.append(r_RBF_n)
-
-        r_RBF = torch.stack(r_RBF_list, dim=1)
-        return r_RBF
-
-class F_cut(nn.Module):
-    def __init__(self, r_cut=5.0):
-        super().__init__()
-        self.r_cut = r_cut
-
-    def forward(self, r_ij):
-        f_c = 0.5 * torch.cos(torch.pi * r_ij / self.r_cut) + 1
+    r_RBF = torch.cat(r_RBF, dim=1)
+    return r_RBF
+def fcut(r_ij, r_cut: float):
+        f_c = 0.5 * (torch.cos(torch.pi * r_ij / r_cut) + 1)
         return f_c
-
-class w(nn.Module):
-    def __init__(self, r_cut=5.0):
-        super().__init__()
-        self.RBF = RBF(r_cut)
-        self.F_cut = F_cut(r_cut)
-        self.net = nn.Linear(20, 384, bias=True)
-
-    def forward(self, r_ij):
-        New_RBF = self.RBF(r_ij)
-        New_F_cut = self.F_cut(r_ij).unsqueeze(1)
-        Total = New_RBF * New_F_cut
-        Output = self.net(Total)
-        return Output
-
+#https://github.com/Yangxinsix/painn-sli/blob/main/PaiNN/model.py
 class MessageBlock(nn.Module):
-    def __init__(self, input_dim=128):
-        super().__init__()
-        self.phi = phi(input_dim)
-        self.w = w()
-        self.v_j = nn.Parameter(torch.zeros(input_dim))
-
-    def forward(self, v_j, s, r_ij):
-        # output_phi = self.phi(s)
-        # output_w = self.w(r_ij)
-        # output_conv = output_phi * output_w
-        # output_split = torch.chunk(output_conv, 3, dim=1)
-
-        # output_v = output_split[0] * v_j  # Select the first 128 elements
-        # delta_s_im = output_split[1]  # Select the next 128 elements
-        # output_r = output_split[2] * (r_ij / r_ij)  # Select the last 128 elements #TODO: check norm
-
-        # delta_s_im = torch.sum(delta_s_im, dim=1)
-        # delta_v_im = torch.sum(output_v + output_r, dim=1)
-        # s = s + delta_s_im
-        # v_j = v_j + delta_v_im
-        # her er hans tester
-
-        output_phi = self.phi(s)
-        output_w = self.w(r_ij)
-        convolution1 = output_phi * output_w #first convolution
-        delta_v, delta_s, delta_rep = convolution1.split(128, dim=-1) #split into three
-        delta_v = v_j * delta_v.unsqueeze(dim=1) # hamard of neighbouring vectors
+    def __init__(self, embedding_size: int, r_cut = float):
+        super(Message, self).__init__()
+        self.r_cut = r_cut
+        self.net = nn.Sequential(
+            nn.Linear(embedding_size, embedding_size, bias=True),
+            nn.Silu(),
+            nn.Linear(embedding_size, 3*embedding_size, bias=True)
+        )
+        self.rbf_layer = nn.Linear(20, 3*embedding_size, bias=True)
+    def forward(self, s, v, edges, r_ij, r_ij_normalized):
+        rbf_pass = self.rbf_layer(RBF(r_ij, self.r_cut))
+        rbf_pass = rbf_pass * fcut(r_ij, self.r_cut).unsqueeze(-1)
+        s_pass = self.net(s)
+        pass_out = rbf_pass * s_pass[edges[:,1]]
+       
+        delta_v, delta_s, delta_rep = pass_out.split(128, dim=-1)
+        
+        delta_v = v[edge[:,1]] * delta_v.unsqueeze(1) # hamard of neighbouring vectors
+        
         delta_direction = r_ij_normalized.unsqueeze(dim=-1) * delta_rep.unsqueeze(dim=1) #norm af r_ij ganget med split, virker ikke pga unsqueeze
+        
         delta_v = delta_v + delta_direction # plusser ovenstående med residualerne fra v
-        s = s + torch.zeros_like(s).index_add(0, index_atom, delta_s) # her opdaterer vi vores nodes med før
-        v_j = v_j + torch.zeros_like(v_j).index_add(0, index_atom, delta_v)
-        return s, v_j
+        
+        s_empty = torch.zeros_like(s)
+        v_empty = torch.zeros_like(v)
+        s_empty.index_add_(0, edge[:, 0], delta_s)
+        v_empty.index_add_(0, edge[:, 0], delta_v)
 
-
-
+        s = s + s_empty
+        v = v + v_empty
+        return s,v
 
 class UpdateBlock(nn.Module):
-    def __init__(self, size_atomwise):
-        '''
-        node_size = size_atomwise: size of the atomwise layers
-        '''
-        super(UpdateBlock).__init__()
+    def __init__(self, embedding_size: int):
+        super().__init__()
+        
+        self.U = nn.Linear(embedding_size,embedding_size)
+        self.V = nn.Linear(embedding_size,embedding_size)
 
-        self.size_atomwise = size_atomwise
-
-        # The U and V matrices
-        self.U = nn.Linear(size_atomwise, size_atomwise, bias = False) # U takes v_j and outputs u_m
-        self.V = nn.Linear(size_atomwise, size_atomwise, bias = False) # V takes v_j and outputs v_m
-
-
-        # Atomwise layers applied to node scalars and V projections (stacked)
-        # This is the S string of opearations
-        self.atomwise_layers = nn.Sequential(
-            nn.Linear(2 * size_atomwise, size_atomwise), # shape (256, 128)
-            nn.SiLU(), # activation function
-            nn.Linear(size_atomwise, 3 * size_atomwise) # shape (128, 384)
-        )
-
-
-    def forward(self, s, v_j):  # atom_scalars = s, atom_vector = v_j
-        """ Forward pass
-        Args:
-            s = atom_scalars: scalar representations of the atoms
-            v_j = atom_vectors: vector (equivariant) representations of the atoms
-                this is the v_j vector
-            graph: interactions between atoms = edges
-            edges_dist: distances between neighbours
-            r_cut: radius to cutoff interaction = 5 Å
-        """
-        # Outputs from matrix projection
-        Uv_j = self.U(s)
-        Vv_j = self.V(v_j)
+        self.net = nn.Sequential(nn.Linear(embedding_size*2, embedding_size),
+                                 nn.Silu(),
+                                 nn.Linear(embedding_size, embedding_size*3))
+        def forward(self, s, v):
+            U = self.U(v)
+            V = self.V(v)
+            V_norm = torch.linalg.norm(V,dim=1)
+            sv_stack = torch.cat((V_norm, s), dim=1)
+            sv_stack_pass = self.net(sv_stack)
+            avv, asv, ass = torch.split(sv_stack_pass, v.shape[-1], dim = 1)
+            d_v = avv.unsqueeze(1)*U
+            product = torch.sum(U * V, dim=1) # den underlige vi troede var scalar
+            d_s = product * asv + ass
+            s = s + d_s
+            v = v + d_v
+            return s, v
+        
+        
 
 
-        # Stacking V projections and node scalars
-        s_Vv_j = torch.cat((s, torch.linalg.norm(Vv_j, dim=1)), dim=1)
-        a = self.atomwise_layers(s_Vv_j)
-        avv, asv, ass = a.split(self.node_size, dim=-1)
-
-        # Scalar product between Uv and Vv
-        s_product = torch.sum(Uv_j * Vv_j, dim=1)
-
-        # Calculating the residual values for scalars and vectors
-        delta_s = ass + asv * s_product
-        delta_v = avv.unsqueeze(dim=1) * Uv_j
-
-        # Updating the representations
-        s = s + delta_s
-        v_j = v_j + delta_v
-
-        return s, v_j
 
 if __name__=="__main__":
     train_set = DataLoader(batch_size=100)
